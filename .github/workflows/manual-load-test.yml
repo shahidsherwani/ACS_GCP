@@ -166,15 +166,6 @@ jobs:
             echo "- Check artifacts for detailed results"
           } > test-report.md
           cat test-report.md
-          
-          ## Notes
-          
-          - Metrics lag 30-60 seconds after load test completion
-          - Console auto-refresh must be enabled to see live updates
-          - Check scaling behavior (3-10 pods for GKE, 1-10 instances for App Engine)
-          
-          EOF
-          cat test-report.md
       
       - name: Upload Test Results
         uses: actions/upload-artifact@v4
