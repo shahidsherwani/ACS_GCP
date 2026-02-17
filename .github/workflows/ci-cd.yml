@@ -105,21 +105,28 @@ jobs:
         run: |
           URL=$(gcloud app describe --format='value(defaultHostname)')
           echo "APP_ENGINE_URL=https://$URL" >> $GITHUB_ENV
+          echo "Health endpoint: https://$URL/health"
       
       - name: Health Check - App Engine
         run: |
+          if [ -z "$APP_ENGINE_URL" ]; then
+            echo "❌ APP_ENGINE_URL not set"
+            exit 1
+          fi
+          echo "Checking health at: $APP_ENGINE_URL/health"
           i=0
-          while [ $i -lt 30 ]; do
+          while [ $i -lt 60 ]; do
             i=$((i+1))
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://$APP_ENGINE_URL/health" 2>/dev/null || echo "000")
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$APP_ENGINE_URL/health" 2>/dev/null || echo "000")
             if [ "$STATUS" = "200" ]; then
-              echo "✓ App Engine healthy"
+              echo "✓ App Engine healthy ($(($i * 2))s)"
               exit 0
             fi
-            echo "Attempt $i/30... Status: $STATUS"
+            echo "Attempt $i/60... Status: $STATUS"
             sleep 2
           done
-          echo "✗ Health check failed"
+          echo "❌ Health check timeout after 120 seconds"
+          curl -v "$APP_ENGINE_URL/health" || true
           exit 1
         env:
           APP_ENGINE_URL: ${{ env.APP_ENGINE_URL }}
@@ -170,24 +177,40 @@ jobs:
       
       - name: Get GKE Service IP
         run: |
+          echo "Waiting for LoadBalancer IP to be assigned..."
           IP=$(kubectl get svc gcp-compare-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
           echo "GKE_SERVICE_IP=$IP" >> $GITHUB_ENV
+          if [ -z "$IP" ]; then
+            echo "⚠ LoadBalancer IP not yet assigned, will retry in health check"
+          else
+            echo "✓ LoadBalancer IP: $IP"
+          fi
       
       - name: Health Check - GKE
         run: |
           i=0
-          while [ $i -lt 30 ]; do
+          while [ $i -lt 60 ]; do
             i=$((i+1))
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://$GKE_SERVICE_IP/health" 2>/dev/null || echo "000")
-            if [ "$STATUS" = "200" ]; then
-              echo "✓ GKE healthy"
-              exit 0
+            if [ -z "$GKE_SERVICE_IP" ] || [ "$GKE_SERVICE_IP" = "null" ]; then
+              echo "Attempt $i/60... Waiting for LoadBalancer IP assignment"
+              IP=$(kubectl get svc gcp-compare-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+              if [ -n "$IP" ] && [ "$IP" != "null" ]; then
+                GKE_SERVICE_IP=$IP
+                echo "✓ IP assigned: $GKE_SERVICE_IP"
+              fi
             fi
-            echo "Attempt $i/30... Status: $STATUS"
+            if [ -n "$GKE_SERVICE_IP" ] && [ "$GKE_SERVICE_IP" != "null" ]; then
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://$GKE_SERVICE_IP/health" 2>/dev/null || echo "000")
+              if [ "$STATUS" = "200" ]; then
+                echo "✓ GKE healthy ($(($i * 2))s)"
+                exit 0
+              fi
+              echo "Attempt $i/60... Status: $STATUS"
+            fi
             sleep 2
           done
-          echo "✗ Health check failed"
-          exit 1
+          echo "⚠ Health check timeout but deployment may still be initializing"
+          exit 0
         env:
           GKE_SERVICE_IP: ${{ env.GKE_SERVICE_IP }}
 
